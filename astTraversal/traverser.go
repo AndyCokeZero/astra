@@ -3,23 +3,40 @@ package astTraversal
 import (
 	"errors"
 	"go/ast"
+	"go/types"
 
 	"github.com/rs/zerolog"
 )
 
 type BaseTraverser struct {
-	baseActiveFile     *FileNode
-	activeFile         *FileNode
-	Log                *zerolog.Logger
-	Packages           *PackageManager
-	shouldAddComponent bool
-	addComponent       func(result Result) error
+	baseActiveFile       *FileNode
+	activeFile           *FileNode
+	Log                  *zerolog.Logger
+	Packages             *PackageManager
+	shouldAddComponent   bool
+	addComponent         func(result Result) error
+	typeTrace            []string
+	typeTraceLimit       int
+	typeRecursionLogged  map[string]bool
+	typeResultCache      map[string]Result
+	callExprFuncCache    map[*ast.CallExpr]*FunctionTraverser
+	callExprFuncErrCache map[*ast.CallExpr]error
+	callExprTypeCache    map[*ast.CallExpr]*types.Func
+	callExprTypeErrCache map[*ast.CallExpr]error
 }
 
 func New(workDir string) *BaseTraverser {
 	packages := NewPackageManager(workDir)
 	return &BaseTraverser{
 		Packages: packages,
+		// Guard against runaway type recursion during schema extraction.
+		typeTraceLimit:       200,
+		typeRecursionLogged:  make(map[string]bool),
+		typeResultCache:      make(map[string]Result),
+		callExprFuncCache:    make(map[*ast.CallExpr]*FunctionTraverser),
+		callExprFuncErrCache: make(map[*ast.CallExpr]error),
+		callExprTypeCache:    make(map[*ast.CallExpr]*types.Func),
+		callExprTypeErrCache: make(map[*ast.CallExpr]error),
 	}
 }
 

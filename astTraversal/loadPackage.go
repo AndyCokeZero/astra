@@ -2,44 +2,69 @@ package astTraversal
 
 import (
 	"fmt"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 )
 
-var cachedPackages = make(map[string]*packages.Package)
+const (
+	fullLoadMode = packages.NeedName |
+		packages.NeedFiles |
+		packages.NeedImports |
+		packages.NeedExportFile |
+		packages.NeedTypes |
+		packages.NeedSyntax |
+		packages.NeedTypesInfo |
+		packages.NeedTypesSizes |
+		packages.NeedModule
+	lightLoadMode = packages.NeedName |
+		packages.NeedFiles |
+		packages.NeedImports |
+		packages.NeedExportFile |
+		packages.NeedTypes |
+		packages.NeedTypesSizes |
+		packages.NeedModule
+)
 
-// LoadPackage loads a package from a path.
+var (
+	cachedPackages   = make(map[string]*packages.Package)
+	cachedPackagesMu sync.Mutex
+)
+
+// LoadPackage loads a package from a path using the full load mode.
 // Because of the way the packages.Load function works, we cache the packages to avoid loading the same package multiple times.
 func LoadPackage(pkgPath string, workDir string) (*packages.Package, error) {
-	if pkg, ok := cachedPackages[pkgPath]; ok {
+	return LoadPackageWithMode(pkgPath, workDir, fullLoadMode)
+}
+
+// LoadPackageWithMode loads a package from a path with the specified load mode.
+func LoadPackageWithMode(pkgPath string, workDir string, mode packages.LoadMode) (*packages.Package, error) {
+	cacheKey := fmt.Sprintf("%s|%d", pkgPath, mode)
+	cachedPackagesMu.Lock()
+	if pkg, ok := cachedPackages[cacheKey]; ok {
+		cachedPackagesMu.Unlock()
 		return pkg, nil
 	}
+	cachedPackagesMu.Unlock()
 
-	pkg, err := LoadPackageNoCache(pkgPath, workDir)
+	pkg, err := LoadPackageNoCache(pkgPath, workDir, mode)
 	if err != nil {
 		return nil, err
 	}
 
-	cachedPackages[pkgPath] = pkg
+	cachedPackagesMu.Lock()
+	cachedPackages[cacheKey] = pkg
+	cachedPackagesMu.Unlock()
 
 	return pkg, nil
 }
 
 // LoadPackageNoCache loads a package from a path.
 // This function will not use the cache when loading the package.
-func LoadPackageNoCache(pkgPath string, workDir string) (*packages.Package, error) {
+func LoadPackageNoCache(pkgPath string, workDir string, mode packages.LoadMode) (*packages.Package, error) {
 	pkgs, err := packages.Load(&packages.Config{
-		Mode: packages.NeedName |
-			packages.NeedFiles |
-			packages.NeedImports |
-			packages.NeedDeps |
-			packages.NeedExportFile |
-			packages.NeedTypes |
-			packages.NeedSyntax |
-			packages.NeedTypesInfo |
-			packages.NeedTypesSizes |
-			packages.NeedModule,
-		Dir: workDir,
+		Mode: mode,
+		Dir:  workDir,
 	}, pkgPath)
 	if err != nil {
 		return nil, err
