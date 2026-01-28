@@ -79,6 +79,11 @@ func parseRoute(s *astra.Service, baseRoute *astra.Route) error {
 	foundFunc := false
 	funcDeclCount := 0
 	sampleFuncNames := make([]string, 0, 5)
+
+	// Get receiver info for method-style handlers
+	isMethod := handler.IsMethod()
+	receiverTypeName := handler.ReceiverTypeName()
+
 	ast.Inspect(traverser.ActiveFile().AST, func(n ast.Node) bool {
 		if n == nil {
 			return true
@@ -94,6 +99,31 @@ func parseRoute(s *astra.Service, baseRoute *astra.Route) error {
 		}
 
 		if ok && funcDecl.Name != nil && funcDecl.Name.Name == funcName {
+			// For method-style handlers, verify the receiver type matches
+			if isMethod {
+				if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+					// This is not a method, continue searching
+					return true
+				}
+				// Check if receiver type matches
+				recvType := funcDecl.Recv.List[0].Type
+				recvTypeName := ""
+				// Handle pointer receiver (*Type)
+				if starExpr, ok := recvType.(*ast.StarExpr); ok {
+					if ident, ok := starExpr.X.(*ast.Ident); ok {
+						recvTypeName = ident.Name
+					}
+				}
+				// Handle value receiver (Type)
+				if ident, ok := recvType.(*ast.Ident); ok {
+					recvTypeName = ident.Name
+				}
+				if recvTypeName != receiverTypeName {
+					// Receiver type doesn't match, continue searching
+					return true
+				}
+			}
+
 			foundFunc = true
 			log.Debug().Str("funcName", funcName).Msg("Found handler function")
 

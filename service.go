@@ -40,6 +40,10 @@ type Service struct {
 
 	CustomFuncs []CustomFunc `json:"-" yaml:"-"`
 
+	// HandlerLocator is used to look up handler function source positions.
+	// If set, it provides file and line information for handlers, overriding runtime.FuncForPC.
+	HandlerLocator HandlerLocator `json:"-" yaml:"-"`
+
 	// CustomTypeMapping is a map of custom types to their OpenAPI type and format
 	CustomTypeMapping map[string]TypeFormat `json:"custom_type_mapping" yaml:"custom_type_mapping"`
 	// fullTypeMapping is a full map of types to their OpenAPI type and format (to save merging the custom type mapping with the predefined type mapping every time)

@@ -1,0 +1,301 @@
+openapi: 3.0.0
+info:
+    title: Contact API
+    description: Example API demonstrating method-style handlers with handler scanner
+    contact: {}
+    license:
+        name: ""
+    version: 1.0.0
+servers:
+    - url: http://localhost:8000
+paths:
+    /contacts:
+        get:
+            description: GetContacts returns all contacts.
+            operationId: getContacts
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: '#/components/schemas/Contact'
+        post:
+            description: CreateContact creates a new contact.
+            operationId: createContact
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateContactRequest'
+            responses:
+                "201":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Contact'
+    /contacts/{id}:
+        get:
+            description: GetContact returns a single contact by ID.
+            operationId: getContact
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Contact'
+        put:
+            description: UpdateContact updates an existing contact.
+            operationId: updateContact
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateContactRequest'
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Contact'
+        delete:
+            description: DeleteContact deletes a contact by ID.
+            operationId: deleteContact
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "204":
+                    description: ""
+    /contacts/{id}/permissions:
+        get:
+            description: GetContactPermissions returns permissions for a contact.
+            operationId: getContactPermissions
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ContactPermissions'
+        put:
+            description: UpdateContactPermissions updates permissions for a contact.
+            operationId: updateContactPermissions
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdatePermissionsRequest'
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ContactPermissions'
+    /friend-requests:
+        get:
+            description: GetFriendRequests returns all friend requests.
+            operationId: getFriendRequests
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: '#/components/schemas/FriendRequest'
+        post:
+            description: CreateFriendRequest creates a new friend request.
+            operationId: createFriendRequest
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                message:
+                                    type: string
+                                to_user:
+                                    type: string
+            responses:
+                "201":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/FriendRequest'
+    /friend-requests/{id}:
+        get:
+            description: GetFriendRequest returns a single friend request by ID.
+            operationId: getFriendRequest
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/FriendRequest'
+    /friend-requests/{id}/status:
+        put:
+            description: UpdateFriendRequestStatus updates the status of a friend request.
+            operationId: updateFriendRequestStatus
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                status:
+                                    $ref: '#/components/schemas/FriendRequestStatus'
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/FriendRequest'
+    /health:
+        get:
+            operationId: getHealth
+            responses:
+                "200":
+                    description: ""
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+components:
+    schemas:
+        Contact:
+            type: object
+            properties:
+                created_at:
+                    type: string
+                email:
+                    type: string
+                id:
+                    type: integer
+                    format: int32
+                name:
+                    type: string
+                phone:
+                    type: string
+            description: Contact represents a user contact.
+        ContactPermissions:
+            type: object
+            properties:
+                can_delete:
+                    type: boolean
+                can_edit:
+                    type: boolean
+                can_view:
+                    type: boolean
+                contact_id:
+                    type: integer
+                    format: int32
+            description: ContactPermissions represents the permissions for a contact.
+        CreateContactRequest:
+            type: object
+            properties:
+                email:
+                    type: string
+                name:
+                    type: string
+                phone:
+                    type: string
+            description: CreateContactRequest is the request body for creating a contact.
+        FriendRequest:
+            type: object
+            properties:
+                created_at:
+                    type: string
+                from_user:
+                    type: string
+                id:
+                    type: integer
+                    format: int32
+                message:
+                    type: string
+                status:
+                    $ref: '#/components/schemas/FriendRequestStatus'
+                to_user:
+                    type: string
+            description: FriendRequest represents a friend request.
+        FriendRequestStatus:
+            enum:
+                - 1
+                - 2
+                - 3
+            x-enum-varnames:
+                - FriendRequestStatusPending
+                - FriendRequestStatusAccepted
+                - FriendRequestStatusExpired
+            type: integer
+            format: uint8
+            description: FriendRequestStatus represents the status of a friend request.
+        UpdateContactRequest:
+            type: object
+            properties:
+                email:
+                    type: string
+                name:
+                    type: string
+                phone:
+                    type: string
+            description: UpdateContactRequest is the request body for updating a contact.
+        UpdatePermissionsRequest:
+            type: object
+            properties:
+                can_delete:
+                    type: boolean
+                can_edit:
+                    type: boolean
+                can_view:
+                    type: boolean
+            description: UpdatePermissionsRequest is the request body for updating contact permissions.

@@ -195,7 +195,10 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 				ctxMethodCallCount++
 				switch funcType.Name() {
 				case "JSON":
-					currRoute, err = funcBuilder.StatusCode().ExpressionResult().Build(func(route *astra.Route, params []any) (*astra.Route, error) {
+					newRoute, buildErr := funcBuilder.StatusCode().ExpressionResult().Build(func(route *astra.Route, params []any) (*astra.Route, error) {
+						if route == nil {
+							return nil, errors.New("route is nil")
+						}
 						statusCode, ok := params[0].(int)
 						if !ok {
 							return nil, errors.New("failed to parse status code")
@@ -217,11 +220,13 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 
 						return route, nil
 					})
-					if err != nil {
+					if buildErr != nil {
 						if log != nil {
-							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse JSON return type")
+							log.Error().Err(buildErr).Str("call", callExprName(callExpr)).Msg("failed to parse JSON return type")
 						}
-						return false
+						// Don't update currRoute so it remains valid for next iteration
+					} else {
+						currRoute = newRoute
 					}
 				case "XML":
 					currRoute, err = funcBuilder.StatusCode().ExpressionResult().Build(func(route *astra.Route, params []any) (*astra.Route, error) {
