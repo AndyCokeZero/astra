@@ -42,6 +42,11 @@ func mapParamToSchema(bindingType astTraversal.BindingTagType, param astra.Param
 }
 
 func mapFieldToSchema(bindingType astTraversal.BindingTagType, field astra.Field) (Schema, bool) {
+	if field.Type == "struct" && len(field.StructFields) > 0 {
+		if schema, ok := mapInlineStructToSchema(bindingType, field); ok {
+			return schema, true
+		}
+	}
 	if !astra.IsAcceptedType(field.Type) {
 		componentRef, bound := makeComponentRef(bindingType, field.Type, field.Package)
 		if bound {
@@ -67,19 +72,128 @@ func mapFieldToSchema(bindingType astTraversal.BindingTagType, field astra.Field
 			}
 			schema.Items = &itemSchema
 		} else if field.Type == "map" {
-			var additionalProperties Schema
-			if !astra.IsAcceptedType(field.MapValueType) {
-				componentRef, bound := makeComponentRef(bindingType, field.MapValueType, field.Package)
-				if bound {
-					additionalProperties.Ref = componentRef
-				}
-			} else {
-				additionalProperties = mapPredefinedTypeFormat(field.MapValueType)
-			}
+			additionalProperties := mapMapValueSchema(bindingType, field)
 			schema.AdditionalProperties = &additionalProperties
 		}
 
 		return schema, true
+	}
+}
+
+func mapInlineStructToSchema(bindingType astTraversal.BindingTagType, field astra.Field) (Schema, bool) {
+	embeddedProperties := make([]Schema, 0)
+	schema := Schema{
+		Type:       "object",
+		Properties: make(map[string]Schema),
+	}
+
+	for _, structField := range field.StructFields {
+		if structField.IsEmbedded {
+			componentRef, componentBound := makeComponentRef(bindingType, structField.Type, structField.Package)
+			if componentBound {
+				embeddedProperties = append(embeddedProperties, Schema{
+					Ref: componentRef,
+				})
+			}
+			continue
+		}
+
+		fieldBinding := structField.StructFieldBindingTags[bindingType]
+		fieldNoBinding := structField.StructFieldBindingTags[astTraversal.NoBindingTag]
+		if fieldBinding == (astTraversal.BindingTag{}) && fieldNoBinding == (astTraversal.BindingTag{}) {
+			return Schema{}, false
+		}
+		if fieldBinding == (astTraversal.BindingTag{}) {
+			fieldBinding = fieldNoBinding
+		}
+
+		if !fieldBinding.NotShown {
+			fieldSchema, fieldBound := mapFieldToSchema(bindingType, structField)
+			if fieldBound {
+				schema.Properties[fieldBinding.Name] = ensureSchema(fieldSchema)
+			}
+		}
+	}
+
+	if len(embeddedProperties) > 0 {
+		if len(schema.Properties) == 0 {
+			schema.AllOf = embeddedProperties
+		} else {
+			schema.AllOf = append(embeddedProperties, Schema{
+				Properties: schema.Properties,
+			})
+			schema.Properties = nil
+		}
+	}
+
+	return schema, true
+}
+
+func ensureSchema(schema Schema) Schema {
+	if isSchemaEmpty(schema) {
+		return Schema{Type: "string"}
+	}
+	return schema
+}
+
+func isSchemaEmpty(schema Schema) bool {
+	return schema.Ref == "" &&
+		schema.Type == "" &&
+		schema.Items == nil &&
+		schema.AdditionalProperties == nil &&
+		schema.Not == nil &&
+		len(schema.Enum) == 0 &&
+		len(schema.Required) == 0 &&
+		len(schema.AllOf) == 0 &&
+		len(schema.OneOf) == 0 &&
+		len(schema.AnyOf) == 0 &&
+		len(schema.Properties) == 0
+}
+
+func mapMapValueSchema(bindingType astTraversal.BindingTagType, field astra.Field) Schema {
+	switch field.MapValueType {
+	case "slice":
+		itemSchema := mapPredefinedTypeFormat(field.MapValueSliceType)
+		if itemSchema.Type == "" && !astra.IsAcceptedType(field.MapValueSliceType) {
+			pkg := field.MapValuePackage
+			if pkg == "" {
+				pkg = field.Package
+			}
+			if componentRef, bound := makeComponentRef(bindingType, field.MapValueSliceType, pkg); bound {
+				itemSchema = Schema{Ref: componentRef}
+			}
+		}
+		return Schema{
+			Type:  "array",
+			Items: &itemSchema,
+		}
+	case "array":
+		itemSchema := mapPredefinedTypeFormat(field.MapValueArrayType)
+		if itemSchema.Type == "" && !astra.IsAcceptedType(field.MapValueArrayType) {
+			pkg := field.MapValuePackage
+			if pkg == "" {
+				pkg = field.Package
+			}
+			if componentRef, bound := makeComponentRef(bindingType, field.MapValueArrayType, pkg); bound {
+				itemSchema = Schema{Ref: componentRef}
+			}
+		}
+		return Schema{
+			Type:  "array",
+			Items: &itemSchema,
+		}
+	default:
+		additionalProperties := mapPredefinedTypeFormat(field.MapValueType)
+		if additionalProperties.Type == "" && !astra.IsAcceptedType(field.MapValueType) {
+			pkg := field.MapValuePackage
+			if pkg == "" {
+				pkg = field.Package
+			}
+			if componentRef, bound := makeComponentRef(bindingType, field.MapValueType, pkg); bound {
+				additionalProperties.Ref = componentRef
+			}
+		}
+		return additionalProperties
 	}
 }
 

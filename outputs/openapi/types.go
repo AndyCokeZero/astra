@@ -182,6 +182,7 @@ type Schema struct {
 	MinProperties        int               `json:"minProperties,omitempty" yaml:"minProperties,omitempty"`
 	Required             []string          `json:"required,omitempty" yaml:"required,omitempty"`
 	Enum                 []interface{}     `json:"enum,omitempty" yaml:"enum,omitempty"`
+	XEnumVarNames        []string          `json:"x-enum-varnames,omitempty" yaml:"x-enum-varnames,omitempty"`
 	Type                 string            `json:"type,omitempty" yaml:"type,omitempty"`
 	Format               string            `json:"format,omitempty" yaml:"format,omitempty"`
 	AllOf                []Schema          `json:"allOf,omitempty" yaml:"allOf,omitempty"`

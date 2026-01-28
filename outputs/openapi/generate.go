@@ -10,13 +10,52 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/ls6-events/astra"
 	"github.com/ls6-events/astra/astTraversal"
 	"github.com/ls6-events/astra/utils"
 
+	"github.com/iancoleman/strcase"
 	"gopkg.in/yaml.v3"
 )
+
+func preferredComponentBinding(bindingTags []astTraversal.BindingTagType) astTraversal.BindingTagType {
+	preferredOrder := []astTraversal.BindingTagType{
+		astTraversal.JSONBindingTag,
+		astTraversal.YAMLBindingTag,
+		astTraversal.XMLBindingTag,
+		astTraversal.FormBindingTag,
+		astTraversal.URIBindingTag,
+		astTraversal.HeaderBindingTag,
+		astTraversal.NoBindingTag,
+	}
+
+	for _, preferred := range preferredOrder {
+		for _, bindingTag := range bindingTags {
+			if bindingTag == preferred {
+				return bindingTag
+			}
+		}
+	}
+
+	if len(bindingTags) > 0 {
+		return bindingTags[0]
+	}
+
+	return astTraversal.NoBindingTag
+}
+
+func defaultOperationID(method string, endpointPath string) string {
+	raw := strings.ToLower(method) + " " + endpointPath
+	sanitized := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return ' '
+	}, raw)
+	return strcase.ToLowerCamel(sanitized)
+}
 
 // Generate the OpenAPI output.
 // It will marshal the OpenAPI struct and write it to a file.
@@ -39,9 +78,15 @@ func Generate(filePath string) astra.ServiceFunction {
 		}
 
 		paths := make(Paths)
+		operationIDs := make(map[string]int)
 		s.Log.Debug().Msg("Adding paths")
 		for _, endpoint := range s.Routes {
 			s.Log.Debug().Str("endpointPath", endpoint.Path).Str("method", endpoint.Method).Msg("Generating endpoint")
+			s.Log.Debug().
+				Str("endpointPath", endpoint.Path).
+				Str("method", endpoint.Method).
+				Int("returnTypeCount", len(endpoint.ReturnTypes)).
+				Msg("Preparing endpoint for responses")
 
 			endpoint.Path = utils.MapPathParams(endpoint.Path, func(param string) string {
 				if param[0] == ':' {
@@ -61,6 +106,7 @@ func Generate(filePath string) astra.ServiceFunction {
 				if !bound {
 					continue
 				}
+				schema = ensureSchema(schema)
 
 				operation.Parameters = append(operation.Parameters, Parameter{
 					Name:     pathParam.Name,
@@ -72,19 +118,42 @@ func Generate(filePath string) astra.ServiceFunction {
 
 			for _, requestHeader := range endpoint.RequestHeaders {
 				s.Log.Debug().Str("endpointPath", endpoint.Path).Str("method", endpoint.Method).Str("param", requestHeader.Name).Msg("Adding request header")
-				schema, bound := mapParamToSchema(astTraversal.HeaderBindingTag, requestHeader)
-				if !bound {
-					continue
-				}
+				if requestHeader.IsBound {
+					field, found := findComponentByPackageAndType(s.Components, requestHeader.Field.Package, requestHeader.Field.Type)
+					if !found {
+						continue
+					}
 
-				parameter := Parameter{
-					Name:     requestHeader.Name,
-					In:       "header",
-					Required: requestHeader.IsRequired,
-					Schema:   schema,
-				}
+					component, bound := componentToSchema(s, field, astTraversal.HeaderBindingTag)
+					if !bound {
+						continue
+					}
 
-				operation.Parameters = append(operation.Parameters, parameter)
+					for propertyName, propertySchema := range component.Properties {
+						propertySchema = ensureSchema(propertySchema)
+						operation.Parameters = append(operation.Parameters, Parameter{
+							Name:     propertyName,
+							In:       "header",
+							Required: requestHeader.IsRequired,
+							Schema:   propertySchema,
+						})
+					}
+				} else {
+					schema, bound := mapParamToSchema(astTraversal.HeaderBindingTag, requestHeader)
+					if !bound {
+						continue
+					}
+					schema = ensureSchema(schema)
+
+					parameter := Parameter{
+						Name:     requestHeader.Name,
+						In:       "header",
+						Required: requestHeader.IsRequired,
+						Schema:   schema,
+					}
+
+					operation.Parameters = append(operation.Parameters, parameter)
+				}
 			}
 
 			for _, queryParam := range endpoint.QueryParams {
@@ -107,6 +176,7 @@ func Generate(filePath string) astra.ServiceFunction {
 					}
 
 					for propertyName, propertySchema := range component.Properties {
+						propertySchema = ensureSchema(propertySchema)
 						style, explode := getQueryParamStyle(propertySchema)
 
 						parameter := Parameter{
@@ -129,7 +199,7 @@ func Generate(filePath string) astra.ServiceFunction {
 						Required: queryParam.IsRequired,
 						Explode:  explode,
 						Style:    style,
-						Schema:   schema,
+						Schema:   ensureSchema(schema),
 					}
 
 					operation.Parameters = append(operation.Parameters, parameter)
@@ -203,13 +273,43 @@ func Generate(filePath string) astra.ServiceFunction {
 					operation.Responses[statusCode].Content[returnType.ContentType] = mediaType
 				}
 			}
+			if len(endpoint.ReturnTypes) == 0 {
+				operation.Responses["200"] = Response{
+					Description: "",
+					Headers:     responseHeaders,
+					Content: map[string]MediaType{
+						"application/json": {
+							Schema: Schema{
+								Type: "object",
+							},
+						},
+					},
+				}
+			}
+			if len(endpoint.ReturnTypes) > 0 && len(operation.Responses) == 0 {
+				s.Log.Error().
+					Str("endpointPath", endpoint.Path).
+					Str("method", endpoint.Method).
+					Msg("Return types present but responses are empty")
+			}
 
 			if endpoint.Doc != "" {
 				operation.Description = endpoint.Doc
 			}
 
-			if endpoint.OperationID != "" {
-				operation.OperationID = endpoint.OperationID
+			operationID := endpoint.OperationID
+			if operationID == "" {
+				operationID = defaultOperationID(endpoint.Method, endpoint.Path)
+			}
+			if operationID != "" {
+				if count, ok := operationIDs[operationID]; ok {
+					count++
+					operationIDs[operationID] = count
+					operationID = fmt.Sprintf("%s_%d", operationID, count)
+				} else {
+					operationIDs[operationID] = 1
+				}
+				operation.OperationID = operationID
 			}
 
 			// Sort parameters by name
@@ -251,10 +351,10 @@ func Generate(filePath string) astra.ServiceFunction {
 
 		s.Log.Debug().Msg("Adding components")
 		for _, component := range s.Components {
-			for _, bindingType := range astTraversal.BindingTags {
+			addComponentSchema := func(bindingType astTraversal.BindingTagType) {
 				schema, bound := componentToSchema(s, component, bindingType)
 				if !bound {
-					continue
+					return
 				}
 
 				s.Log.Debug().Interface("binding", bindingType).Str("name", component.Name).Msg("Adding component")
@@ -268,6 +368,16 @@ func Generate(filePath string) astra.ServiceFunction {
 					components.Schemas[componentName] = schema
 				}
 			}
+
+			bindingTags, uniqueBindings := astra.ExtractBindingTags(component.StructFields)
+			if uniqueBindings {
+				for _, bindingType := range bindingTags {
+					addComponentSchema(bindingType)
+				}
+				continue
+			}
+
+			addComponentSchema(preferredComponentBinding(bindingTags))
 		}
 		s.Log.Debug().Msg("Added components")
 

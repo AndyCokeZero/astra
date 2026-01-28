@@ -1,8 +1,10 @@
 package openapi
 
 import (
-	"slices"
+	"fmt"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ls6-events/astra"
 	"github.com/ls6-events/astra/astTraversal"
@@ -29,85 +31,90 @@ func getPackageName(pkg string) string {
 	return pkg[strings.LastIndex(pkg, "/")+1:]
 }
 
+func normalizeSchemaName(name string) string {
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	var builder strings.Builder
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		runes := []rune(part)
+		runes[0] = unicode.ToUpper(runes[0])
+		builder.WriteString(string(runes))
+	}
+	return builder.String()
+}
+
 // makeCollisionSafeNamesFromComponents creates collision safe names for the components.
 // This needs to be run before any routes or components are generated.
 // As the makeComponentRefName function relies on the collisionSafeNames map.
 func makeCollisionSafeNamesFromComponents(components []astra.Field) {
-	// Group the components by package name.
-	packageNames := make(map[string][]astra.Field)
-	for _, component := range components {
-		packageName := getPackageName(component.Package)
-
-		// If the package name doesn't exist in the map, create it.
-		if _, exists := packageNames[packageName]; !exists {
-			packageNames[packageName] = make([]astra.Field, 0)
-		}
-
-		// Append the component to the package name.
-		packageNames[packageName] = append(packageNames[packageName], component)
+	type componentNameEntry struct {
+		keys           []string
+		baseName       string
+		normalizedName string
+		pkg            string
 	}
 
-	for _, components := range packageNames {
-		// Iterate over every component and see if there is ever a case where the full package path doesn't match up.
-		sameUntil := 0
-		for i := 0; i < len(components)-1; i++ {
-			for j := i + 1; j < len(components)-i; j++ {
-				// If the packages don't match, we need to find the first point where they don't match.
-				if components[i].Package != components[j].Package {
-					// Create a slice of the package path split by "/".
-					iComponentPackageSplit := strings.Split(components[i].Package, "/")
-					jComponentPackageSplit := strings.Split(components[j].Package, "/")
+	collisionSafeNames = make(map[string]string)
+	entries := make([]componentNameEntry, 0)
 
-					// Reverse the package path so we can iterate from the end first.
-					slices.Reverse(iComponentPackageSplit)
-					slices.Reverse(jComponentPackageSplit)
-
-					// Iterate over the package path slices and find the first point where they don't match.
-					for k := 0; k < len(iComponentPackageSplit) && k < len(jComponentPackageSplit); k++ {
-						if iComponentPackageSplit[k] != jComponentPackageSplit[k] {
-							// We've found the first point where they don't match, set sameUntil to k and break out of the loop.
-							sameUntil = k
-							break
-						}
-					}
-					break
+	for _, component := range components {
+		bindingTags, uniqueBindings := astra.ExtractBindingTags(component.StructFields)
+		if uniqueBindings {
+			for _, bindingType := range bindingTags {
+				name := component.Name
+				if bindingType != astTraversal.NoBindingTag {
+					name = component.Name + "_" + string(bindingType)
 				}
+				entries = append(entries, componentNameEntry{
+					keys:           []string{collisionSafeKey(bindingType, component.Name, component.Package)},
+					baseName:       name,
+					normalizedName: normalizeSchemaName(name),
+					pkg:            component.Package,
+				})
 			}
+			continue
 		}
 
-		// Iterate over every component and create a collision safe name.
-		for _, component := range components {
-			bindingTags, uniqueBindings := astra.ExtractBindingTags(component.StructFields)
-			for _, bindingType := range bindingTags {
-				// If sameUntil is greater than 0, we need to remove the package path up to the point where they first don't match.
-				if sameUntil > 0 {
-					// Split the package path by "/".
-					splitPackage := strings.Split(component.Package, "/")
+		keys := make([]string, 0, len(bindingTags))
+		for _, bindingType := range bindingTags {
+			keys = append(keys, collisionSafeKey(bindingType, component.Name, component.Package))
+		}
+		entries = append(entries, componentNameEntry{
+			keys:           keys,
+			baseName:       component.Name,
+			normalizedName: normalizeSchemaName(component.Name),
+			pkg:            component.Package,
+		})
+	}
 
-					// Pick the final part of the package path, guided by sameUntil.
-					// We add 1 because we want to access the first different part of the package path.
-					// e.g. github.com/ls6-events/astra and github.com/different/astra would give us sameUntil = 1.
-					// and split into "ls6-events" and "different".
-
-					splitPackage = splitPackage[len(splitPackage)-(sameUntil+1):]
-
-					if uniqueBindings {
-						// If there are unique bindings, we need to add the binding type to the collision safe name.
-						collisionSafeNames[collisionSafeKey(bindingType, component.Name, component.Package)] = strings.Join(splitPackage, ".") + "." + string(bindingType) + "." + component.Name
-					} else {
-						// If there are no unique bindings, we can just use the package name.
-						collisionSafeNames[collisionSafeKey(bindingType, component.Name, component.Package)] = strings.Join(splitPackage, ".") + "." + component.Name
-					}
-				} else {
-					if uniqueBindings {
-						// If there are unique bindings, we need to add the binding type to the collision safe name.
-						collisionSafeNames[collisionSafeKey(bindingType, component.Name, component.Package)] = getPackageName(component.Package) + "." + string(bindingType) + "." + component.Name
-					} else {
-						// If there are no unique bindings, we can just use the package name.
-						collisionSafeNames[collisionSafeKey(bindingType, component.Name, component.Package)] = getPackageName(component.Package) + "." + component.Name
-					}
-				}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].normalizedName == entries[j].normalizedName {
+			if entries[i].pkg == entries[j].pkg {
+				return strings.Join(entries[i].keys, ".") < strings.Join(entries[j].keys, ".")
 			}
+			return entries[i].pkg < entries[j].pkg
+		}
+		return entries[i].normalizedName < entries[j].normalizedName
+	})
+
+	counts := make(map[string]int)
+	for _, entry := range entries {
+		counts[entry.normalizedName]++
+	}
+
+	used := make(map[string]int)
+	for _, entry := range entries {
+		finalName := entry.baseName
+		if counts[entry.normalizedName] > 1 {
+			used[entry.normalizedName]++
+			finalName = fmt.Sprintf("%s_%d", entry.baseName, used[entry.normalizedName])
+		}
+		for _, key := range entry.keys {
+			collisionSafeNames[key] = finalName
 		}
 	}
 }
@@ -130,6 +137,17 @@ func makeComponentRefName(bindingType astTraversal.BindingTagType, name, pkg str
 	}
 
 	return componentName, bound
+}
+
+func overrideFieldSchema(bindingType astTraversal.BindingTagType, component astra.Field, field astra.Field, fieldBinding astTraversal.BindingTag) (Schema, bool) {
+	if getPackageName(component.Package) == "proto" && component.Name == "Blog" && fieldBinding.Name == "sharedThread" && field.Type == "ChatThread" {
+		componentRef, bound := makeComponentRef(bindingType, "SimpleChatThread", field.Package)
+		if bound {
+			return Schema{Ref: componentRef}, true
+		}
+	}
+
+	return Schema{}, false
 }
 
 // componentToSchema converts a component to a schema.
@@ -168,6 +186,11 @@ func componentToSchema(service *astra.Service, component astra.Field, bindingTyp
 			}
 
 			if !fieldBinding.NotShown {
+				if override, ok := overrideFieldSchema(bindingType, component, field, fieldBinding); ok {
+					schema.Properties[fieldBinding.Name] = override
+					continue
+				}
+
 				fieldSchema, fieldBound := componentToSchema(service, field, bindingType)
 				if fieldBound {
 					schema.Properties[fieldBinding.Name] = fieldSchema
@@ -220,15 +243,7 @@ func componentToSchema(service *astra.Service, component astra.Field, bindingTyp
 			MaxLength: int(component.ArrayLength),
 		}
 	} else if component.Type == "map" {
-		additionalProperties := mapPredefinedTypeFormat(component.MapValueType)
-
-		if additionalProperties.Type == "" && !astra.IsAcceptedType(component.MapValueType) {
-			componentRef, ok := makeComponentRef(bindingType, component.MapValueType, component.Package)
-			if ok {
-				additionalProperties.Ref = componentRef
-			}
-		}
-
+		additionalProperties := mapMapValueSchema(bindingType, component)
 		schema = Schema{
 			Type:                 "object",
 			AdditionalProperties: &additionalProperties,
@@ -243,7 +258,21 @@ func componentToSchema(service *astra.Service, component astra.Field, bindingTyp
 				}
 			}
 		} else {
-			schema.Enum = component.EnumValues
+			if len(component.EnumValues) > 0 {
+				schema.Enum = component.EnumValues
+				if len(component.EnumNames) == len(component.EnumValues) {
+					hasName := false
+					for _, name := range component.EnumNames {
+						if name != "" {
+							hasName = true
+							break
+						}
+					}
+					if hasName {
+						schema.XEnumVarNames = component.EnumNames
+					}
+				}
+			}
 		}
 	}
 
