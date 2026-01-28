@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	"go/types"
+	"net/http"
 	"strings"
 
 	"github.com/ls6-events/astra"
@@ -26,10 +27,36 @@ const (
 // The currRoute reference is used to manipulate the current route being analysed.
 // The imports are used to determine the package of the context variable.
 func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTraverser, currRoute *astra.Route, activeFile *astTraversal.FileNode, level int) error {
+	if funcTraverser == nil || funcTraverser.Node == nil || funcTraverser.Node.Body == nil {
+		if funcTraverser != nil && funcTraverser.Traverser != nil && funcTraverser.Traverser.Log != nil {
+			fileName := ""
+			if activeFile != nil {
+				fileName = activeFile.FileName
+			}
+			funcTraverser.Traverser.Log.Error().
+				Str("func", funcTraverser.Name()).
+				Str("file", fileName).
+				Msg("Function body is nil")
+		}
+		return errors.New("function body is nil")
+	}
 	traverser := funcTraverser.Traverser
 
 	traverser.SetActiveFile(activeFile)
 	traverser.SetAddComponentFunction(addComponent(s))
+	var (
+		callExprCount      int
+		ctxArgCallCount    int
+		ctxMethodCallCount int
+		returnTypeCount    int
+		funcTypeErrorCount int
+		funcResolveErrors  []string
+	)
+	log := traverser.Log
+	funcName := ""
+	if funcTraverser != nil && funcTraverser.DeclNode != nil {
+		funcName = funcTraverser.Name()
+	}
 
 	if level == 0 {
 		funcDoc, err := funcTraverser.Doc()
@@ -39,10 +66,28 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 		if funcDoc != "" {
 			currRoute.Doc = strings.TrimSpace(funcDoc)
 		}
+		if log != nil {
+			log.Info().
+				Str("func", funcName).
+				Str("file", activeFile.FileName).
+				Str("path", currRoute.Path).
+				Str("method", currRoute.Method).
+				Msg("Parsing handler function")
+		}
 	}
 
 	ctxName := funcTraverser.FindArgumentNameByType(GinContextType, GinPackagePath, GinContextIsPointer)
 	if ctxName == "" {
+		if log != nil {
+			fileName := ""
+			if activeFile != nil {
+				fileName = activeFile.FileName
+			}
+			log.Error().
+				Str("func", funcName).
+				Str("file", fileName).
+				Msg("Context argument not found in function")
+		}
 		return errors.New("failed to find context variable name")
 	}
 
@@ -52,6 +97,11 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 		if n == nil {
 			return true
 		}
+		resetActiveFile := func() {
+			if activeFile != nil {
+				traverser.SetActiveFile(activeFile)
+			}
+		}
 		// If a function is called
 		var callExpr *astTraversal.CallExpressionTraverser
 		callExpr, err = traverser.CallExpression(n)
@@ -59,6 +109,10 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 			err = nil
 			return true
 		} else if err != nil {
+			return true
+		}
+		callExprCount++
+		if shouldSkipCall(callExpr) {
 			return true
 		}
 
@@ -88,31 +142,48 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 		// If the function takes the context as any argument, traverse it
 		_, ok := callExpr.ArgIndex(ctxName)
 		if ok {
+			ctxArgCallCount++
 			var function *astTraversal.FunctionTraverser
 			function, err = callExpr.Function()
 			if err != nil {
-				traverser.Log.Error().Err(err).Msg("failed to get function")
-				return false
+				if log != nil {
+					log.Debug().Err(err).Str("call", callExprName(callExpr)).Msg("failed to get function")
+					funcResolveErrors = append(funcResolveErrors, "function:"+callExprName(callExpr))
+				}
+				resetActiveFile()
+				return true
 			}
 
 			err = parseFunction(s, function, currRoute, function.Traverser.ActiveFile(), level+1)
 			if err != nil {
-				traverser.Log.Error().Err(err).Msg("error parsing function")
-				return false
+				if log != nil {
+					log.Debug().Err(err).Str("call", callExprName(callExpr)).Msg("error parsing function")
+				}
+				resetActiveFile()
+				return true
 			}
 
-			traverser.SetActiveFile(activeFile)
+			resetActiveFile()
 		} else {
 			var funcType *types.Func
 			funcType, err = callExpr.Type()
 			if err != nil {
-				return false
+				funcTypeErrorCount++
+				if log != nil {
+					log.Debug().Err(err).Str("call", callExprName(callExpr)).Msg("failed to get call expression type")
+					funcResolveErrors = append(funcResolveErrors, "type:"+callExprName(callExpr))
+				}
+				resetActiveFile()
+				return true
 			}
 
 			signature, ok := funcType.Type().(*types.Signature)
 			if !ok {
-				traverser.Log.Error().Err(err).Msg("error getting function signature")
-				return false
+				if log != nil {
+					log.Debug().Str("call", callExprName(callExpr)).Msg("error getting function signature")
+				}
+				resetActiveFile()
+				return true
 			}
 
 			signaturePath := GinPackagePath + "." + GinContextType
@@ -121,6 +192,7 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 			}
 
 			if signature.Recv() != nil && signature.Recv().Type().String() == signaturePath {
+				ctxMethodCallCount++
 				switch funcType.Name() {
 				case "JSON":
 					currRoute, err = funcBuilder.StatusCode().ExpressionResult().Build(func(route *astra.Route, params []any) (*astra.Route, error) {
@@ -141,10 +213,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse JSON return type")
+						}
 						return false
 					}
 				case "XML":
@@ -166,10 +242,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse XML return type")
+						}
 						return false
 					}
 				case "YAML":
@@ -191,10 +271,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse YAML return type")
+						}
 						return false
 					}
 				case "ProtoBuf":
@@ -216,10 +300,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse ProtoBuf return type")
+						}
 						return false
 					}
 				case "Data":
@@ -240,10 +328,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse Data return type")
+						}
 						return false
 					}
 				case "String": // c.String
@@ -262,10 +354,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse String return type")
+						}
 						return false
 					}
 				case "Status": // c.Status
@@ -283,6 +379,7 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
@@ -382,17 +479,7 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 
 						field := astra.ParseResultToField(result)
 
-						route.PathParams = append(route.PathParams, astra.Param{
-							IsBound: true,
-							Field:   field,
-						})
-
 						route.QueryParams = append(route.QueryParams, astra.Param{
-							IsBound: true,
-							Field:   field,
-						})
-
-						route.RequestHeaders = append(route.RequestHeaders, astra.Param{
 							IsBound: true,
 							Field:   field,
 						})
@@ -637,10 +724,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse AbortWithError return type")
+						}
 						return false
 					}
 				case "AbortWithStatus":
@@ -658,10 +749,14 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse AbortWithStatus return type")
+						}
 						return false
 					}
 				case "AbortWithStatusJSON":
@@ -683,14 +778,19 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 						}
 
 						route.ReturnTypes = astra.AddReturnType(route.ReturnTypes, returnType)
+						returnTypeCount++
 
 						return route, nil
 					})
 					if err != nil {
+						if log != nil {
+							log.Error().Err(err).Str("call", callExprName(callExpr)).Msg("failed to parse AbortWithStatusJSON return type")
+						}
 						return false
 					}
 				}
 			}
+			resetActiveFile()
 		}
 
 		return true
@@ -700,11 +800,129 @@ func parseFunction(s *astra.Service, funcTraverser *astTraversal.FunctionTravers
 		return err
 	}
 
-	if len(currRoute.ReturnTypes) == 0 && level == 0 {
-		return errors.New("return type not found")
+	if level == 0 {
+		fileName := ""
+		if activeFile != nil {
+			fileName = activeFile.FileName
+		}
+		path := ""
+		method := ""
+		if currRoute != nil {
+			path = currRoute.Path
+			method = currRoute.Method
+		}
+		if currRoute == nil {
+			if log != nil {
+				log.Error().
+					Str("func", funcName).
+					Str("file", fileName).
+					Str("path", path).
+					Str("method", method).
+					Msg("Current route is nil when checking return types")
+			}
+			return errors.New("current route is nil")
+		}
+		if len(currRoute.ReturnTypes) == 0 && log != nil {
+			log.Warn().
+				Str("func", funcName).
+				Str("file", fileName).
+				Str("path", path).
+				Str("method", method).
+				Str("ctxName", ctxName).
+				Int("callExprCount", callExprCount).
+				Int("ctxArgCallCount", ctxArgCallCount).
+				Int("ctxMethodCallCount", ctxMethodCallCount).
+				Int("returnTypeCount", returnTypeCount).
+				Int("funcTypeErrorCount", funcTypeErrorCount).
+				Strs("funcResolveErrors", funcResolveErrors).
+				Msg("No return types found for route, falling back to empty JSON response")
+		}
+		if len(currRoute.ReturnTypes) == 0 {
+			currRoute.ReturnTypes = astra.AddReturnType(currRoute.ReturnTypes, astra.ReturnType{
+				StatusCode:  http.StatusOK,
+				ContentType: "application/json",
+				Field: astra.Field{
+					Type: "struct",
+				},
+			})
+		}
 	}
 
 	return nil
+}
+
+func callExprName(callExpr *astTraversal.CallExpressionTraverser) string {
+	if callExpr == nil || callExpr.Node == nil || callExpr.Node.Fun == nil {
+		return ""
+	}
+
+	switch nodeFun := callExpr.Node.Fun.(type) {
+	case *ast.Ident:
+		return nodeFun.Name
+	case *ast.SelectorExpr:
+		if ident, ok := nodeFun.X.(*ast.Ident); ok {
+			return ident.Name + "." + nodeFun.Sel.Name
+		}
+		return nodeFun.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func shouldSkipCall(callExpr *astTraversal.CallExpressionTraverser) bool {
+	if callExpr == nil || callExpr.Node == nil || callExpr.Node.Fun == nil {
+		return false
+	}
+	sel, ok := callExpr.Node.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if sel.Sel != nil && sel.Sel.Name == "Translate" && isI18nServiceSelector(sel) {
+		return true
+	}
+	if isHttputilSelector(callExpr, sel) {
+		return true
+	}
+	return false
+}
+
+func isI18nServiceSelector(sel *ast.SelectorExpr) bool {
+	if sel == nil {
+		return false
+	}
+	switch x := sel.X.(type) {
+	case *ast.Ident:
+		return x.Name == "i18nService" || x.Name == "I18nService"
+	case *ast.SelectorExpr:
+		if x.Sel == nil {
+			return false
+		}
+		return x.Sel.Name == "i18nService" || x.Sel.Name == "I18nService"
+	default:
+		return false
+	}
+}
+
+func isHttputilSelector(callExpr *astTraversal.CallExpressionTraverser, sel *ast.SelectorExpr) bool {
+	if sel == nil {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if ident.Name == "httputil" {
+		return true
+	}
+	if callExpr == nil || callExpr.File == nil {
+		return false
+	}
+	importInfo, ok := callExpr.File.FindImport(ident.Name)
+	if !ok {
+		return false
+	}
+	pkgPath := importInfo.Package.Path()
+	return strings.HasSuffix(pkgPath, "/httputil")
 }
 
 func addComponent(s *astra.Service) func(astTraversal.Result) error {

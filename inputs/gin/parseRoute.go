@@ -76,6 +76,9 @@ func parseRoute(s *astra.Service, baseRoute *astra.Route) error {
 		log.Debug().Msg("No path params found")
 	}
 
+	foundFunc := false
+	funcDeclCount := 0
+	sampleFuncNames := make([]string, 0, 5)
 	ast.Inspect(traverser.ActiveFile().AST, func(n ast.Node) bool {
 		if n == nil {
 			return true
@@ -83,7 +86,15 @@ func parseRoute(s *astra.Service, baseRoute *astra.Route) error {
 
 		funcDecl, ok := n.(*ast.FuncDecl)
 
-		if ok && funcDecl.Name.Name == funcName {
+		if ok && funcDecl.Name != nil {
+			funcDeclCount++
+			if len(sampleFuncNames) < cap(sampleFuncNames) {
+				sampleFuncNames = append(sampleFuncNames, funcDecl.Name.Name)
+			}
+		}
+
+		if ok && funcDecl.Name != nil && funcDecl.Name.Name == funcName {
+			foundFunc = true
 			log.Debug().Str("funcName", funcName).Msg("Found handler function")
 
 			startPos := traverser.ActiveFile().Package.Package.Fset.Position(funcDecl.Pos())
@@ -152,6 +163,17 @@ func parseRoute(s *astra.Service, baseRoute *astra.Route) error {
 
 		return true
 	})
+
+	if !foundFunc {
+		log.Info().
+			Str("funcName", funcName).
+			Str("file", baseRoute.File).
+			Int("line", baseRoute.LineNo).
+			Str("handler", baseRoute.Handler).
+			Int("funcDeclCount", funcDeclCount).
+			Strs("sampleFuncNames", sampleFuncNames).
+			Msg("Handler function not found in file")
+	}
 
 	if err != nil {
 		return err
