@@ -12,12 +12,16 @@ func ParseResultToField(result astTraversal.Result) Field {
 		Type:                      result.Type,
 		Name:                      result.Name,
 		EnumValues:                result.EnumValues,
+		EnumNames:                 result.EnumNames,
 		IsEmbedded:                result.IsEmbedded,
 		SliceType:                 result.SliceType,
 		ArrayType:                 result.ArrayType,
 		ArrayLength:               result.ArrayLength,
 		MapKeyType:                result.MapKeyType,
 		MapValueType:              result.MapValueType,
+		MapValueSliceType:         result.MapValueSliceType,
+		MapValueArrayType:         result.MapValueArrayType,
+		MapValueArrayLength:       result.MapValueArrayLength,
 		StructFieldBindingTags:    result.StructFieldBindingTags,
 		StructFieldValidationTags: result.StructFieldValidationTags,
 	}
@@ -42,6 +46,9 @@ func ParseResultToField(result astTraversal.Result) Field {
 	// If the map key type is populated and not a primitive type, we need to get the package path for the map key.
 	if result.MapKeyType != "" && !IsAcceptedType(result.MapKeyType) {
 		field.MapKeyPackage = result.MapKeyPackage.Path()
+	}
+	if result.MapValuePackage != nil {
+		field.MapValuePackage = result.MapValuePackage.Path()
 	}
 
 	// If the struct fields are populated, we need to parse them.

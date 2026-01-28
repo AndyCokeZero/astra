@@ -72,7 +72,8 @@ type Field struct {
 	Type    string `json:"type,omitempty" yaml:"type,omitempty"`
 	Name    string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	EnumValues []any `json:"enumValues,omitempty" yaml:"enumValues,omitempty"`
+	EnumValues []any    `json:"enumValues,omitempty" yaml:"enumValues,omitempty"`
+	EnumNames  []string `json:"enumNames,omitempty" yaml:"enumNames,omitempty"`
 
 	IsRequired bool `json:"isRequired,omitempty" yaml:"isRequired,omitempty"`
 	IsEmbedded bool `json:"isEmbedded,omitempty" yaml:"isEmbedded,omitempty"`
@@ -82,9 +83,13 @@ type Field struct {
 	ArrayType   string `json:"arrayType,omitempty" yaml:"arrayType,omitempty"`
 	ArrayLength int64  `json:"arrayLength,omitempty" yaml:"arrayLength,omitempty"`
 
-	MapKeyPackage string `json:"mapKeyPackage,omitempty" yaml:"mapKeyPackage,omitempty"`
-	MapKeyType    string `json:"mapKeyType,omitempty" yaml:"mapKeyType,omitempty"`
-	MapValueType  string `json:"mapValueType,omitempty" yaml:"mapValueType,omitempty"`
+	MapKeyPackage       string `json:"mapKeyPackage,omitempty" yaml:"mapKeyPackage,omitempty"`
+	MapKeyType          string `json:"mapKeyType,omitempty" yaml:"mapKeyType,omitempty"`
+	MapValueType        string `json:"mapValueType,omitempty" yaml:"mapValueType,omitempty"`
+	MapValuePackage     string `json:"mapValuePackage,omitempty" yaml:"mapValuePackage,omitempty"`
+	MapValueSliceType   string `json:"mapValueSliceType,omitempty" yaml:"mapValueSliceType,omitempty"`
+	MapValueArrayType   string `json:"mapValueArrayType,omitempty" yaml:"mapValueArrayType,omitempty"`
+	MapValueArrayLength int64  `json:"mapValueArrayLength,omitempty" yaml:"mapValueArrayLength,omitempty"`
 
 	StructFields              map[string]Field              `json:"structFields,omitempty" yaml:"structFields,omitempty"`
 	StructFieldBindingTags    astTraversal.BindingTagMap    `json:"structFieldBindingTags,omitempty" yaml:"structFieldBindingTags,omitempty"`
