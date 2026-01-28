@@ -1,7 +1,10 @@
 package astTraversal
 
 import (
+	"bufio"
 	"go/ast"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -11,10 +14,12 @@ import (
 type PackagePathLoader func(path string) (string, error)
 
 type PackageManager struct {
-	mu          sync.Mutex
-	tree        *PackageNode
-	workDir     string
-	pathLoaders []PackagePathLoader
+	mu               sync.Mutex
+	tree             *PackageNode
+	workDir          string
+	pathLoaders      []PackagePathLoader
+	modulePath       string
+	modulePathLoaded bool
 }
 
 func NewPackageManager(workDir string) *PackageManager {
@@ -24,6 +29,48 @@ func NewPackageManager(workDir string) *PackageManager {
 			Edges: make([]*PackageNode, 0),
 		},
 	}
+}
+
+func (pm *PackageManager) modulePathValue() string {
+	if pm.modulePathLoaded {
+		return pm.modulePath
+	}
+	pm.modulePathLoaded = true
+	goModPath := filepath.Join(pm.workDir, "go.mod")
+	file, err := os.Open(goModPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "module ") {
+			pm.modulePath = strings.TrimSpace(strings.TrimPrefix(line, "module "))
+			break
+		}
+	}
+
+	return pm.modulePath
+}
+
+func (pm *PackageManager) isLocalPackagePath(pkgPath string) bool {
+	if pkgPath == "" || pkgPath == "main" {
+		return true
+	}
+	modulePath := pm.modulePathValue()
+	if modulePath == "" {
+		return true
+	}
+	return strings.HasPrefix(pkgPath, modulePath)
+}
+
+func (pm *PackageManager) shouldLoadFullPackage(pkgPath string) bool {
+	if pm.isLocalPackagePath(pkgPath) {
+		return true
+	}
+	return pkgPath == "net/http"
 }
 
 func (pm *PackageManager) AddPathLoader(loader PackagePathLoader) {
@@ -72,20 +119,26 @@ func (pm *PackageManager) Get(n *PackageNode) (*packages.Package, error) {
 				break
 			}
 		}
-		pkg, err := LoadPackage(path, pm.workDir)
+		mode := lightLoadMode
+		if pm.shouldLoadFullPackage(path) {
+			mode = fullLoadMode
+		}
+		pkg, err := LoadPackageWithMode(path, pm.workDir, mode)
 		if err != nil {
 			return nil, err
 		}
 
 		n.Package = pkg
 
-		for _, file := range n.Package.Syntax {
-			n.Files = append(n.Files, &FileNode{
-				Package:  n,
-				FileName: n.Package.Fset.Position(file.Pos()).Filename,
-				AST:      file,
-				Imports:  pm.MapImportSpecs(file.Imports),
-			})
+		if len(n.Package.Syntax) > 0 {
+			for _, file := range n.Package.Syntax {
+				n.Files = append(n.Files, &FileNode{
+					Package:  n,
+					FileName: n.Package.Fset.Position(file.Pos()).Filename,
+					AST:      file,
+					Imports:  pm.MapImportSpecs(file.Imports),
+				})
+			}
 		}
 	}
 
