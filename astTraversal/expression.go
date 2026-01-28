@@ -91,7 +91,11 @@ func (e *ExpressionTraverser) Value() (string, error) {
 			return "", err
 		}
 
-		pkg := e.Traverser.Packages.FindOrAdd(obj.Pkg().Path())
+		pkgPath := obj.Pkg().Path()
+		if e.Traverser == nil || e.Traverser.Packages == nil || !e.Traverser.Packages.shouldLoadFullPackage(pkgPath) {
+			return "", errors.New("value not retrievable")
+		}
+		pkg := e.Traverser.Packages.FindOrAdd(pkgPath)
 		_, err = e.Traverser.Packages.Get(pkg)
 		if err != nil {
 			return "", err
@@ -153,6 +157,8 @@ func (e *ExpressionTraverser) Type() (types.Type, error) {
 	case *ast.ArrayType:
 		return e.File.Package.FindTypeForExpr(n)
 	case *ast.MapType:
+		return e.File.Package.FindTypeForExpr(n)
+	case *ast.StructType:
 		return e.File.Package.FindTypeForExpr(n)
 	case *ast.CompositeLit:
 		return e.Traverser.Expression(n.Type).Type()

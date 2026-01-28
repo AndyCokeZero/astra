@@ -24,6 +24,8 @@ type Result struct {
 	// EnumValues is a list of enum values (e.g. for an enum { Foo, Bar })
 	// This is used for when the result of a types.Named becomes a types.Basic and has constant values defined in the package
 	EnumValues []any
+	// EnumNames is a list of enum names matching EnumValues order.
+	EnumNames []string
 
 	// MapKeyPackage is the package of the map key (e.g. for a map[string]string)
 	MapKeyPackage *PackageNode
@@ -33,6 +35,18 @@ type Result struct {
 
 	// MapValueType is the type of the map value (e.g. for a map[string]string)
 	MapValueType string
+
+	// MapValuePackage is the package of the map value when it is not a primitive type
+	MapValuePackage *PackageNode
+
+	// MapValueSliceType is the type of a map value slice element
+	MapValueSliceType string
+
+	// MapValueArrayType is the type of a map value array element
+	MapValueArrayType string
+
+	// MapValueArrayLength is the length of the map value array
+	MapValueArrayLength int64
 
 	// SliceType is the type of the slice (e.g. for a []string)
 	SliceType string
